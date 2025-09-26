@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.19;
+
+/**
+ * @title ChainGuard
+ * @dev A security-focused smart contract providing multi-layered access control,
+ * emergency pause functionality, and secure asset management
+ */
+contract ChainGuard {
+    
+    // Events
+    event AccessGranted(address indexed user, uint8 level);
+    event AccessRevoked(address indexed user);
+    event EmergencyActivated(address indexed activator);
+    event EmergencyDeactivated(address indexed deactivator);
+    event AssetSecured(address indexed asset, uint256 amount);
+    event AssetReleased(address indexed asset, uint256 amount, address indexed recipient);
+    
+    // State variables
+    address public owner;
+    bool public emergencyMode;
+    uint256 public totalSecuredAssets;
+    
+    // Access levels: 0 = No Access, 1 = Basic, 2 = Admin, 3 = Super Admin
+    mapping(address => uint8) public accessLevels;
+    mapping(address => uint256) public securedBalances;
+    mapping(address => bool) public emergencyResponders;
+    
+    // Modifiers
+    modifier onlyOwner() {
+        require(msg.sender == owner, "ChainGuard: Only owner can call this function");
+        _;
+    }
+    
+    modifier onlyAdmin() {
+        require(accessLevels[msg.sender] >= 2, "ChainGuard: Admin access required");
+        _;
+    }
+    
+    modifier notInEmergency() {
+        require(!emergencyMode, "ChainGuard: Contract is in emergency mode");
+        _;
+    }
+    
+    modifier onlyEmergencyResponder() {
+        require(emergencyResponders[msg.sender] || msg.sender == owner, 
+                "ChainGuard: Emergency responder access required");
+        _;
+    }
+    
+    constructor() {
+        owner = msg.sender;
+        accessLevels[owner] = 3; // Super Admin
+        emergencyResponders[owner] = true;
+        emergencyMode = false;
+    }
+    
+    /**
+     * @dev Core Function 1: Multi-level Access Control System
+     * Manages user permissions with different access levels
+     * @param user Address to grant/modify access
+     * @param level Access level (0-3)
+     */
+    function manageAccess(address user, uint8 level) external onlyAdmin notInEmergency {
+        require(user != address(0), "ChainGuard: Invalid address");
+        require(level <= 3, "ChainGuard: Invalid access level");
+        require(accessLevels[msg.sender] > level || msg.sender == owner, 
+                "ChainGuard: Cannot grant higher access than your own");
+        
+        if (level == 0) {
+            delete accessLevels[user];
+            emergencyResponders[user] = false;
+            emit AccessRevoked(user);
+        } else {
+            accessLevels[user] = level;
+            if (level >= 2) {
+                emergencyResponders[user] = true;
+            }
+            emit AccessGranted(user, level);
+        }
+    }
+    
+    /**
+     * @dev Core Function 2: Emergency Control System
+     * Allows authorized users to activate/deactivate emergency mode
+     * Emergency mode pauses most contract functions for security
+     */
+    function toggleEmergencyMode() external onlyEmergencyResponder {
+        emergencyMode = !emergencyMode;
+        
+        if (emergencyMode) {
+            emit EmergencyActivated(msg.sender);
+        } else {
+            emit EmergencyDeactivated(msg.sender);
+        }
+    }
+    
+    /**
+     * @dev Core Function 3: Secure Asset Management
+     * Securely locks and manages ETH deposits with controlled release
+     */
+    function secureAssets() external payable notInEmergency {
+        require(msg.value > 0, "ChainGuard: Must send ETH to secure");
+        require(accessLevels[msg.sender] >= 1, "ChainGuard: Basic access required");
+        
+        securedBalances[msg.sender] += msg.value;
+        totalSecuredAssets += msg.value;
+        
+        emit AssetSecured(msg.sender, msg.value);
+    }
+    
+    /**
+     * @dev Release secured assets to specified recipient
+     * @param recipient Address to receive the assets
+     * @param amount Amount to release
+     */
+    function releaseAssets(address payable recipient, uint256 amount) external notInEmergency {
+        require(recipient != address(0), "ChainGuard: Invalid recipient");
+        require(securedBalances[msg.sender] >= amount, "ChainGuard: Insufficient secured balance");
+        require(accessLevels[msg.sender] >= 1, "ChainGuard: Basic access required");
+        
+        securedBalances[msg.sender] -= amount;
+        totalSecuredAssets -= amount;
+        
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "ChainGuard: Asset transfer failed");
+        
+        emit AssetReleased(msg.sender, amount, recipient);
+    }
+    
+    /**
+     * @dev Emergency asset recovery (only in emergency mode)
+     * @param user User whose assets to recover
+     * @param recipient Address to send recovered assets
+     */
+    function emergencyRecovery(address user, address payable recipient) external onlyOwner {
+        require(emergencyMode, "ChainGuard: Emergency mode required");
+        require(recipient != address(0), "ChainGuard: Invalid recipient");
+        
+        uint256 amount = securedBalances[user];
+        require(amount > 0, "ChainGuard: No assets to recover");
+        
+        securedBalances[user] = 0;
+        totalSecuredAssets -= amount;
+        
+        (bool success, ) = recipient.call{value: amount}("");
+        require(success, "ChainGuard: Recovery transfer failed");
+        
+        emit AssetReleased(user, amount, recipient);
+    }
+    
+    // View functions
+    function getAccessLevel(address user) external view returns (uint8) {
+        return accessLevels[user];
+    }
+    
+    function getSecuredBalance(address user) external view returns (uint256) {
+        return securedBalances[user];
+    }
+    
+    function isEmergencyResponder(address user) external view returns (bool) {
+        return emergencyResponders[user];
+    }
+    
+    function getContractBalance() external view returns (uint256) {
+        return address(this).balance;
+    }
+    
+    // Transfer ownership
+    function transferOwnership(address newOwner) external onlyOwner {
+        require(newOwner != address(0), "ChainGuard: Invalid new owner");
+        accessLevels[newOwner] = 3;
+        emergencyResponders[newOwner] = true;
+        accessLevels[owner] = 2;
+        owner = newOwner;
+    }
+}
